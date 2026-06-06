@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Poker Local Corporativo</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            margin: 0;
+            background: radial-gradient(circle, #730202, #260000);
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .lantern { position: absolute; font-size: 70px; z-index: 0; opacity: 0.6; animation: flicker 3s infinite alternate; }
+        .lantern.top-left { top: 30px; left: 80px; }
+        .lantern.top-right { top: 30px; right: 80px; }
+
+        @keyframes flicker {
+            0% { opacity: 0.5; }
+            100% { opacity: 0.7; }
+        }
+
+        #login-screen {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 40px;
+            border-radius: 15px;
+            text-align: center;
+            z-index: 100;
+            border: 2px solid #f2c94c;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+
+        #login-screen input, #login-screen button {
+            padding: 12px;
+            margin: 10px;
+            font-size: 16px;
+            border-radius: 5px;
+            border: none;
+            display: block;
+            width: 250px;
+        }
+        #login-screen button {
+            background: #f2c94c;
+            color: black;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .table-container {
+            position: relative;
+            width: 950px;
+            height: 480px;
+            background: #b80d0d;
+            border: 18px solid #c29d38;
+            border-radius: 240px;
+            box-shadow: inset 0 0 60px rgba(0,0,0,0.6), 0 15px 35px rgba(0,0,0,0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1;
+        }
+
+        .center-area {
+            text-align: center;
+            z-index: 5;
+        }
+
+        .pot {
+            font-size: 22px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            background: rgba(0,0,0,0.7);
+            padding: 6px 25px;
+            border-radius: 20px;
+            border: 1px solid #f2c94c;
+            display: inline-block;
+        }
+
+        .community-cards {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            min-height: 110px;
+            min-width: 400px;
+        }
+
+        .card {
+            width: 75px;
+            height: 110px;
+            background: white;
+            color: black;
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            font-size: 26px;
+            font-weight: bold;
+            box-shadow: 0 5px 10px rgba(0,0,0,0.4);
+            position: relative;
+        }
+
+        .red-suit { color: #d91c1c; }
+
+    .player-seat {
+        position: absolute;
+        background: #141414;
+        border: 3px solid #555;
+        border-radius: 12px;
+        width: 140px;
+        height: 70px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        font-size: 14px;
+        box-shadow: 0 6px 12px rgba(0,0,0,0.6);
+        transition: all 0.3s ease;
+        z-index: 20; /* Faz o nome/fichas ficarem na frente das cartas */
+    }
+
+        .player-seat .name { font-weight: bold; margin-bottom: 4px; color: #fff; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
+        .player-seat .chips { color: #f2c94c; font-weight: bold; }
+        .player-seat .bet-tag { font-size: 11px; background: #2196F3; padding: 2px 6px; border-radius: 8px; margin-top: 3px; }
+
+        /* Posições distribuídas ao redor do feltro oval */
+        .pos-0 { bottom: -35px; left: 50%; transform: translateX(-50%); border-color: #4CAF50; } 
+        .pos-1 { bottom: 40px; left: -40px; }
+        .pos-2 { top: 50%; left: -85px; transform: translateY(-50%); }
+        .pos-3 { top: 40px; left: -40px; }
+        .pos-4 { top: -35px; left: 50%; transform: translateX(-50%); }
+        .pos-5 { top: 40px; right: -40px; }
+        .pos-6 { top: 50%; right: -85px; transform: translateY(-50%); }
+        .pos-7 { bottom: 40px; right: -40px; }
+
+        .action-panel {
+            position: absolute;
+            bottom: -110px;
+            display: flex;
+            gap: 15px;
+            z-index: 20;
+        }
+
+        .action-panel button {
+            background: #262626;
+            color: white;
+            border: 2px solid #666;
+            padding: 12px 24px;
+            font-size: 15px;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .action-panel button:hover { background: #404040; transform: scale(1.05); }
+        .action-panel button.fold { border-color: #d91c1c; color: #ff6b6b; }
+        .action-panel button.call { border-color: #2196F3; color: #6ba6ff; }
+        .action-panel button.raise { border-color: #4CAF50; color: #8eff6b; }
+        .action-panel button.allin { border-color: #ff9800; color: #ffb74d; }
+
+        .my-cards {
+            position: absolute;
+            bottom: 25px; /* Sobe um pouquinho para aparecer bem atrás do painel */
+            display: flex;
+            gap: 8px;
+            z-index: 10; /* Z-index menor que o do jogador faz as cartas ficarem atrás */
+            transform: scale(0.75);
+            transform-origin: bottom center;
+        }
+
+        #startBtn {
+            position: absolute;
+            top: -55px;
+            background: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            border: none;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        }
+        #startBtn:hover { background: #45a049; }
+    </style>
+</head>
+<body>
+
+    <div class="lantern top-left">🏮</div>
+    <div class="lantern top-right">🏮</div>
+
+    <div id="login-screen">
+        <h2 style="margin-top:0; color:#f2c94c;">Poker IndexTech</h2>
+        <p>Insira seu nome antes de sentar:</p>
+        <input type="text" id="playerName" placeholder="Nome Ex: Jean">
+        <button onclick="joinGame()">Entrar na Mesa</button>
+    </div>
+
+    <div class="table-container" style="display: none;" id="game-screen">
+        <div class="center-area">
+            <div class="pot">Pote Geral: <span id="potAmount">0</span> 🪙</div>
+            <div class="community-cards" id="communityCards"></div>
+        </div>
+        
+        <div id="players-container"></div>
+        <div class="my-cards" id="myCards"></div>
+
+        <div class="action-panel" id="actionPanel" style="display: none;">
+            <button class="fold" onclick="sendAction('fold')">Desistir (Fold)</button>
+            <button class="call" id="callBtn" onclick="sendAction('call')">Pedir Mesa / Pagar</button>
+            <button class="raise" onclick="handleRaiseClick()">Aumentar (Raise)</button>
+            <button class="allin" onclick="sendAction('all-in')">ALL-IN!</button>
+        </div>
+        
+        <button id="startBtn" onclick="startGame()" style="display: none;">Dar as Cartas (Iniciar)</button>
+    </div>
+
+    <script>
+        const socket = io();
+        let myId = null;
+        let localState = null;
+
+        function joinGame() {
+            const name = document.getElementById('playerName').value;
+            if (!name) return alert("Por favor, informe seu nome corporativo!");
+            socket.emit('join_game', { name: name });
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('game-screen').style.display = 'flex';
+        }
+
+        function startGame() {
+            socket.emit('start_game');
+        }
+
+        function sendAction(action, amount=0) {
+            socket.emit('player_action', { action: action, amount: amount });
+        }
+
+        function handleRaiseClick() {
+            if (!localState) return;
+            
+            const p = localState.players[myId];
+            const meuFichario = p.chips;
+            const apostaMinimaAtual = localState.current_min_bet;
+            
+            // Regra da Casa: O incremento mínimo é de 5 moedas
+            const incrementoMinimo = 5;
+            
+            // O texto agora pede o valor extra, não o total
+            const valorInput = prompt(`🔥 QUANTO VOCÊ QUER ACRESCENTAR?\n\nA aposta atual está em ${apostaMinimaAtual}.\nO incremento mínimo é de ${incrementoMinimo} moedas.\nVocê possui ${meuFichario} moedas na carteira.\n\nDigite APENAS o valor extra que deseja somar à aposta:`);
+            
+            if (valorInput !== null && valorInput.trim() !== "") {
+                const acrescimo = parseInt(valorInput);
+                
+                if (isNaN(acrescimo)) {
+                    alert("❌ Por favor, digite apenas números inteiros!");
+                    return;
+                }
+
+                // O JavaScript faz a conta por você e descobre qual será a nova aposta total
+                const novaApostaTotal = apostaMinimaAtual + acrescimo;
+                
+                // Verifica se você digitou pelo menos o incremento mínimo de 5 (e se não é um All-in de raspas de tacho)
+                if (acrescimo < incrementoMinimo && novaApostaTotal < (meuFichario + p.bet)) {
+                    alert(`❌ Aumento Inválido!\nPelas regras da mesa, você precisa acrescentar NO MÍNIMO ${incrementoMinimo} moedas.`);
+                } 
+                // Verifica se a soma do acréscimo com a aposta atual não ultrapassa o que você tem
+                else if (novaApostaTotal > (meuFichario + p.bet)) {
+                    alert(`❌ Saldo Insuficiente!\nVocê tentou aumentar em ${acrescimo}, o que daria um total de ${novaApostaTotal}, mas você só tem ${meuFichario + p.bet}. Se quiser apostar tudo, use o botão ALL-IN!`);
+                } 
+                else {
+                    // Envia o valor somado mastigadinho para o Python processar
+                    sendAction('raise', novaApostaTotal);
+                }
+            }
+        }
+
+        socket.on('connect', () => { myId = socket.id; });
+
+        socket.on('game_reset', (data) => {
+            alert(data.msg);
+            location.reload();
+        });
+
+        socket.on('show_winner', (data) => {
+            alert(data.msg);
+        });
+
+        socket.on('error_msg', (data) => {
+            alert(data.msg);
+            location.reload();
+        });
+
+        socket.on('game_update', (state) => {
+            localState = state;
+            document.getElementById('potAmount').innerText = state.pot;
+            
+            // Renderizar cartas comunitárias (Mesa)
+            const commCardsDiv = document.getElementById('communityCards');
+            commCardsDiv.innerHTML = '';
+            state.community_cards.forEach(card => {
+                const isRed = card.naipe === '♥' || card.naipe === '♦';
+                commCardsDiv.innerHTML += `<div class="card ${isRed ? 'red-suit' : ''}"><div>${card.valor}</div><div style="font-size:32px;">${card.naipe}</div></div>`;
+            });
+            
+            const playersContainer = document.getElementById('players-container');
+            playersContainer.innerHTML = '';
+            
+            const playerSids = Object.keys(state.players);
+            
+            // Exibir o botão Iniciar apenas se estiver aguardando e houver pelo menos 2 na mesa
+            if (state.phase === 'waiting' && playerSids.length >= 2) {
+                document.getElementById('startBtn').style.display = 'block';
+            } else {
+                document.getElementById('startBtn').style.display = 'none';
+            }
+
+            // --- LÓGICA DA COROA: Encontrar o jogador mais rico (Fichas + Aposta atual) ---
+            let maxWealth = -1;
+            playerSids.forEach(sid => {
+                const wealth = state.players[sid].chips + state.players[sid].bet;
+                if (wealth > maxWealth) {
+                    maxWealth = wealth;
+                }
+            });
+            
+            let posIndex = 0;
+            playerSids.forEach((sid) => {
+                const p = state.players[sid];
+                const seat = document.createElement('div');
+                
+                seat.className = `player-seat pos-${sid === myId ? 0 : posIndex + 1}`;
+                
+                let statusInfo = "";
+                if (p.status === 'folded') statusInfo = "<span style='color:red;'>Folded</span>";
+                else if (p.status === 'all-in') statusInfo = "<span style='color:orange;'>ALL-IN</span>";
+                else if (p.bet > 0) statusInfo = `<span class="bet-tag">Apostou: ${p.bet}</span>`;
+
+                // --- DESENHANDO A COROA ---
+                // Agora ela tem left, translateX e z-index altíssimo para centralizar e não sumir!
+                const myWealth = p.chips + p.bet;
+                let crownHtml = "";
+                if (myWealth === maxWealth && maxWealth > 0) {
+                    crownHtml = "<div style='position: absolute; top: -35px; left: 50%; transform: translateX(-50%); font-size: 32px; z-index: 999; text-shadow: 0px 0px 10px gold, 0px 4px 4px rgba(0,0,0,0.8);'>👑</div>";
+                }
+                
+                seat.innerHTML = `
+                    ${crownHtml}
+                    <span class="name">${p.name}</span>
+                    <span class="chips">${p.chips} 💰</span>
+                    ${statusInfo}
+                `;
+                
+                // Brilho amarelo/dourado se for o turno da pessoa
+                if (state.phase !== 'waiting' && state.turn_order[state.current_turn_index] === sid) {
+                    seat.style.borderColor = '#f2c94c';
+                    seat.style.boxShadow = '0 0 25px #f2c94c';
+                    seat.style.transform = sid === myId ? 'translateX(-50%) scale(1.1)' : 'scale(1.1)';
+                }
+
+                playersContainer.appendChild(seat);
+                
+                // Trata elementos do jogador dono da tela
+                if (sid === myId) {
+                    const myCardsDiv = document.getElementById('myCards');
+                    myCardsDiv.innerHTML = '';
+                    p.cards.forEach(card => {
+                        const isRed = card.naipe === '♥' || card.naipe === '♦';
+                        myCardsDiv.innerHTML += `<div class="card ${isRed ? 'red-suit' : ''}"><div>${card.valor}</div><div style="font-size:32px;">${card.naipe}</div></div>`;
+                    });
+
+                    const btnCall = document.getElementById('callBtn');
+                    if (btnCall) {
+                        const betNeeded = state.current_min_bet - p.bet;
+                        if (betNeeded > 0) {
+                            btnCall.innerText = `Pagar (Call ${betNeeded})`;
+                        } else {
+                            btnCall.innerText = "Pedir Mesa (Check)";
+                        }
+                    }
+
+                    const isMyTurn = state.turn_order[state.current_turn_index] === myId;
+                    document.getElementById('actionPanel').style.display = (isMyTurn && state.phase !== 'waiting') ? 'flex' : 'none';
+                }
+                
+                if (sid !== myId) posIndex++;
+            });
+        });
+    </script>
+</body>
+</html>
