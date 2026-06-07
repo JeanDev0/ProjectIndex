@@ -46,17 +46,14 @@
 
         .my-pifpaf-hand { position: absolute; bottom: 20px; display: flex; gap: 5px; z-index: 10; transform: scale(0.85); transform-origin: bottom center; }
         
-        /* Bloco único e definitivo para as cartas na mão do Pif-Paf */
         .my-pifpaf-hand .card { 
             cursor: grab; 
             border: 3px solid transparent; 
             user-select: none; 
             touch-action: none;
-            /* Transição suave para o movimento */
             transition: transform 0.2s cubic-bezier(0.2, 0, 0, 1), box-shadow 0.2s;
         }
 
-        /* Efeito quando você toca ou clica na carta (ela "levanta") */
         .my-pifpaf-hand .card:active { 
             cursor: grabbing; 
             transform: scale(1.1) translateY(-20px); 
@@ -64,12 +61,11 @@
             z-index: 99; 
         }
 
-        /* Estado da carta selecionada para descartar/bater */
         .my-pifpaf-hand .card.selected { 
             border-color: #f59e0b; 
             transform: translateY(-15px); 
             box-shadow: 0 10px 20px rgba(245, 158, 11, 0.5); 
-}
+        }
 
         .player-seat { position: absolute; background: #162032; border: 2px solid #334155; border-radius: 8px; width: 140px; height: 70px; display: flex; flex-direction: column; justify-content: center; align-items: center; font-size: 14px; box-shadow: 0 6px 12px rgba(0,0,0,0.6); z-index: 20; }
         .player-seat .name { font-weight: bold; color: #fff;}
@@ -90,6 +86,9 @@
 <body>
 
     <div class="tech-bg-line line-1"></div><div class="tech-bg-line line-2"></div><div class="tech-bg-line line-3"></div>
+    
+    <!-- NOTIFICAÇÃO DE ERRO -->
+    <div id="toast-msg" style="display: none; position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #ef4444; color: white; padding: 15px 30px; border-radius: 8px; font-weight: bold; z-index: 9999; box-shadow: 0 5px 15px rgba(0,0,0,0.5); text-align: center;"></div>
 
     <div id="login-screen" class="panel-screen">
         <div class="logo-text"><span class="index">Index</span><span class="tech">Tech</span><span class="cursor">_</span></div>
@@ -136,6 +135,7 @@
         </div>
     </div>
 
+    <!-- TELA 4: PIF-PAF -->
     <div class="table-container" style="display: none;" id="pifpaf-screen">
         <div class="table-watermark">Index<span>Tech</span>_</div>
         <div class="center-area">
@@ -177,7 +177,14 @@
 
         socket.on('connect', () => { myId = socket.id; });
         socket.on('game_reset', (data) => { alert(data.msg); location.reload(); });
-        socket.on('error_msg', (data) => { alert(data.msg); });
+        
+        // PLACA DE ERRO BONITA E VISÍVEL
+        socket.on('error_msg', (data) => { 
+            const toast = document.getElementById('toast-msg');
+            toast.innerText = data.msg;
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 4000); 
+        });
 
         function goToLobby() {
             const nameInput = document.getElementById('playerName').value;
@@ -206,13 +213,9 @@
             e.preventDefault();
             if (draggedIdx === null || draggedIdx === targetIdx) return;
             
-            // Pega o elemento que foi arrastado
             const draggedElement = document.querySelector(`[data-idx="${draggedIdx}"]`);
-            
-            // Aplica uma animação de "sumiço" rápido antes de reorganizar
             draggedElement.style.opacity = '0';
             
-            // O timeout garante que o navegador processe a troca visualmente
             setTimeout(() => {
                 const card = myPifPafCards.splice(draggedIdx, 1)[0];
                 myPifPafCards.splice(targetIdx, 0, card);
@@ -223,7 +226,7 @@
                 
                 draggedIdx = null; 
                 renderPifPafHand();
-            }, 150); // 150ms é o tempo perfeito para o olho humano perceber a transição
+            }, 150); 
         }
 
         function touchStart(e, idx) { touchIdx = idx; e.currentTarget.style.transform = 'translateY(-10px)'; }
@@ -251,25 +254,45 @@
         }
 
         function renderPifPafHand() {
-            const div = document.getElementById('pifpaf-myCards'); div.innerHTML = '';
+            const div = document.getElementById('pifpaf-myCards'); 
+            div.innerHTML = '';
+            
             myPifPafCards.forEach((c, i) => {
                 const isRed = c.naipe === '♥' || c.naipe === '♦';
                 const selClass = i === pifpafSelectedCard ? 'selected' : '';
                 
-                div.innerHTML += `
-                    <div class="card ${isRed ? 'red-suit' : ''} ${selClass}" 
-                         data-idx="${i}" draggable="true" 
-                         ondragstart="dragStart(event, ${i})" ondragover="dragOver(event)" ondrop="drop(event, ${i})" 
-                         onclick="selectPifPafCard(${i})"
-                         ontouchstart="touchStart(event, ${i})" ontouchmove="touchMove(event)" ontouchend="touchEnd(event)">
-                         <div>${c.valor}</div><div style="font-size:32px;">${c.naipe}</div>
-                    </div>`;
+                // Criamos o elemento da carta
+                const cardEl = document.createElement('div');
+                cardEl.className = `card ${isRed ? 'red-suit' : ''} ${selClass}`;
+                cardEl.innerHTML = `<div>${c.valor}</div><div style="font-size:32px;">${c.naipe}</div>`;
+                cardEl.setAttribute('data-idx', i);
+                cardEl.setAttribute('draggable', 'true');
+                
+                // Adicionamos os eventos com um pequeno filtro para não conflitar
+                cardEl.addEventListener('dragstart', (e) => dragStart(e, i));
+                cardEl.addEventListener('dragover', dragOver);
+                cardEl.addEventListener('drop', (e) => drop(e, i));
+                
+                // TRUQUE: O clique agora usa 'mousedown' para ser mais rápido e preciso no PC
+                cardEl.addEventListener('mousedown', (e) => {
+                    // Impede que o clique dispare se for apenas um arrasto iniciado
+                    selectPifPafCard(i);
+                });
+                
+                // Mantém os eventos de touch para o celular
+                cardEl.addEventListener('touchstart', (e) => touchStart(e, i));
+                cardEl.addEventListener('touchmove', touchMove);
+                cardEl.addEventListener('touchend', touchEnd);
+                
+                div.appendChild(cardEl);
             });
             
+            // ... (O restante da lógica de botões e visibilidade continua igual)
             if(!localPifPaf) return;
             const isMyTurn = localPifPaf.turn_order[localPifPaf.current_turn_index] === myId;
             const isPlaying = localPifPaf.phase === 'playing';
-            const has9 = myPifPafCards.length === 9; const has10 = myPifPafCards.length === 10;
+            const has9 = myPifPafCards.length === 9; 
+            const has10 = myPifPafCards.length === 10;
             
             document.getElementById('pifpaf-actionPanel').style.display = isPlaying ? 'flex' : 'none';
             document.getElementById('btn-discard').style.display = 'none';
@@ -279,22 +302,18 @@
             if(isMyTurn && isPlaying) {
                 document.getElementById('btn-discard').style.display = (has10 && pifpafSelectedCard !== -1) ? 'block' : 'none';
                 document.getElementById('btn-bater').style.display = (has10 && pifpafSelectedCard !== -1) ? 'block' : 'none';
-                document.getElementById('monte-pile').style.boxShadow = (!has10) ? '0 0 20px #10b981' : '';
-                document.getElementById('lixo-pile').style.boxShadow = (!has10) ? '0 0 20px #ef4444' : '';
-            } else if (isPlaying) {
-                document.getElementById('monte-pile').style.boxShadow = ''; document.getElementById('lixo-pile').style.boxShadow = '';
-                if (has9 && pifpafSelectedCard !== -1 && localPifPaf.lixo.length > 0) {
-                    document.getElementById('btn-intercept').style.display = 'block';
-                }
+            } else if (isPlaying && has9 && pifpafSelectedCard !== -1 && localPifPaf.lixo.length > 0) {
+                document.getElementById('btn-intercept').style.display = 'block';
             }
         }
 
         function drawMonte() { if(myPifPafCards.length === 9) socket.emit('pifpaf_action', {action: 'draw_monte'}); }
         function drawLixo() { if(myPifPafCards.length === 9) socket.emit('pifpaf_action', {action: 'draw_lixo'}); }
+        
         function discardCard() {
             if (pifpafSelectedCard !== -1) {
                 const card = myPifPafCards[pifpafSelectedCard];
-                socket.emit('pifpaf_action', { action: 'discard', card_valor: card.valor, card_naipe: card.naipe });
+                socket.emit('pifpaf_action', {action: 'discard', card_id: card.id});
                 pifpafSelectedCard = -1;
             }
         }
@@ -303,7 +322,7 @@
             if (pifpafSelectedCard !== -1) {
                 if (confirm("Deseja BATER descartando esta carta? O servidor vai analisar se suas 9 cartas formam jogos válidos.")) {
                     const card = myPifPafCards[pifpafSelectedCard];
-                    socket.emit('pifpaf_action', { action: 'bater', card_valor: card.valor, card_naipe: card.naipe });
+                    socket.emit('pifpaf_action', { action: 'bater', card_id: card.id });
                     pifpafSelectedCard = -1;
                 }
             }
@@ -311,9 +330,9 @@
 
         function interceptBater() {
             if (pifpafSelectedCard !== -1) {
-                if (confirm("⚡ INTERCEPTAÇÃO: Tem certeza que a carta que está no LIXO completa seu jogo? Você descartará a sua carta selecionada em troca dela.")) {
+                if (confirm("⚡ INTERCEPTAÇÃO: Tem certeza que a carta que está no LIXO completa seu jogo? Você descartará a carta selecionada.")) {
                     const card = myPifPafCards[pifpafSelectedCard];
-                    socket.emit('pifpaf_action', { action: 'intercept_bater', card_valor: card.valor, card_naipe: card.naipe });
+                    socket.emit('pifpaf_action', { action: 'intercept_bater', card_id: card.id });
                     pifpafSelectedCard = -1;
                 }
             }
@@ -333,25 +352,23 @@
             pids.forEach((sid) => {
                 const p = state.players[sid];
                 if(sid === myId) {
-                    // --- SINCRONIZAÇÃO INTELIGENTE (Preserva o seu Drag & Drop) ---
-                    let serverCards = [...p.cards];
-                    let localCards = [...myPifPafCards];
-                    let newOrder = [];
+                    // --- SINCRONIZAÇÃO INTELIGENTE BLINDADA ---
+                    let serverCards = p.cards;
                     
-                    // 1. Mantém a ordem das cartas que você já organizou
-                    for(let i = 0; i < localCards.length; i++) {
-                        let lCard = localCards[i];
-                        let sIdx = serverCards.findIndex(sCard => sCard.valor === lCard.valor && sCard.naipe === lCard.naipe);
-                        if(sIdx !== -1) {
-                            newOrder.push(lCard);
-                            serverCards.splice(sIdx, 1); // Remove da fila do servidor
+                    // Se for nova rodada ou reconnect (Diferença brusca de cartas)
+                    if (myPifPafCards.length === 0 || serverCards.length === 0 || Math.abs(serverCards.length - myPifPafCards.length) > 1) {
+                        myPifPafCards = [...serverCards];
+                    } else {
+                        // Se comprou (Adiciona na direita)
+                        if (serverCards.length > myPifPafCards.length) {
+                            let novas = serverCards.filter(sc => !myPifPafCards.find(lc => lc.id === sc.id));
+                            myPifPafCards.push(...novas); 
+                        }
+                        // Se descartou (Remove apenas o que saiu do servidor)
+                        else if (serverCards.length < myPifPafCards.length) {
+                            myPifPafCards = myPifPafCards.filter(lc => serverCards.find(sc => sc.id === lc.id));
                         }
                     }
-                    
-                    // 2. Adiciona a carta nova (se você comprou alguma) no final da sua mão
-                    newOrder = newOrder.concat(serverCards);
-                    myPifPafCards = newOrder;
-                    
                     renderPifPafHand();
                 }
                 const seat = document.createElement('div'); seat.className = `player-seat pos-${sid === myId ? 0 : posIndex + 1}`;
@@ -368,6 +385,22 @@
             document.getElementById('pifpaf-winner-msg').innerText = data.msg;
             const cardsDiv = document.getElementById('pifpaf-winner-cards'); cardsDiv.innerHTML = '';
             data.cards.forEach(c => { cardsDiv.innerHTML += getCardHTML(c).replace('class="card', 'class="card" style="box-shadow: 0 0 20px #10b981;"'); });
+            modal.style.display = 'flex';
+        });
+
+        // Painel de revelação para validação coletiva
+        socket.on('pifpaf_showdown', (data) => {
+            const modal = document.getElementById('pifpaf-winner-modal');
+            document.getElementById('pifpaf-winner-msg').innerText = data.msg;
+            
+            const cardsDiv = document.getElementById('pifpaf-winner-cards');
+            cardsDiv.innerHTML = '';
+            
+            // Mostra as cartas do vencedor organizadas
+            data.cards.forEach(c => {
+                cardsDiv.innerHTML += getCardHTML(c).replace('class="card', 'class="card" style="box-shadow: 0 0 20px #10b981; cursor: default;"');
+            });
+            
             modal.style.display = 'flex';
         });
 
@@ -424,5 +457,10 @@
             });
         });
     </script>
+    <div id="pifpaf-winner-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:1000; flex-direction:column; align-items:center; justify-content:center;">
+    <h2 id="pifpaf-winner-msg" style="color:white; margin-bottom:20px;"></h2>
+    <div id="pifpaf-winner-cards" style="display:flex; gap:10px; margin-bottom:20px;"></div>
+    <button onclick="document.getElementById('pifpaf-winner-modal').style.display='none'" style="padding:10px 20px; cursor:pointer;">Fechar</button>
+</div>
 </body>
 </html>
