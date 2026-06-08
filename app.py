@@ -1,364 +1,292 @@
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
-import random
-import itertools
+import random, itertools
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'indextech_secreto'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-NAIPES = ['♠', '♥', '♦', '♣']
-VALORES = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-VALORES_ORDER = {'2':2, '3':3, '4':4, '5':5, '6':6, '7':7, '8':8, '9':9, '10':10, 'J':11, 'Q':12, 'K':13, 'A':14}
-
-game_state = {
-    'players': {}, 'turn_order': [], 'current_turn_index': 0, 'community_cards': [],
-    'deck': [], 'pot': 0, 'current_min_bet': 50, 'last_raise': 50, 'phase': 'waiting',
-    'acted_this_round': [], 'dealer_index': 0
-}
-
-pifpaf_state = {
-    'players': {}, 'turn_order': [], 'current_turn_index': 0,
-    'monte': [], 'lixo': [], 'phase': 'waiting', 'dealer_index': 0
-}
-
-def create_deck(multiplicator=1):
-    deck = []
-    idx = 0
-    for _ in range(multiplicator):
-        for n in NAIPES:
-            for v in VALORES:
-                deck.append({'valor': v, 'naipe': n, 'id': f"{v}{n}_{idx}_{random.randint(1000, 9999)}"})
-                idx += 1
-    return deck
-
-# --- O ÁRBITRO (COM REGRAS DE NATAL) ---
-def is_valid_pifpaf(cards):
-    if len(cards) != 9: return False
-    val_map = {'A':1, '2':2, '3':3, '4':4, '5':5, '6':6, '7':7, '8':8, '9':9, '10':10, 'J':11, 'Q':12, 'K':13}
-    
-    def is_group(c1, c2, c3):
-        # REGRA DE NATAL: Trinca (Mesmo valor, 3 NAIPES DIFERENTES)
-        if c1['valor'] == c2['valor'] == c3['valor']:
-            naipes = [c1['naipe'], c2['naipe'], c3['naipe']]
-            if len(set(naipes)) == 3: # Exige exatamente 3 naipes distintos
-                return True
-                
-        # REGRA DE NATAL: Sequência (Mesmo naipe, sequência numérica)
-        if c1['naipe'] == c2['naipe'] == c3['naipe']:
-            v = sorted([val_map[c1['valor']], val_map[c2['valor']], val_map[c3['valor']]])
-            if v == [v[0], v[0]+1, v[0]+2]: return True
-            if v == [1, 12, 13]: return True # Permite fechar com Q-K-A
-            
-        return False
-
-    def backtrack(rem):
-        if not rem: return True
-        first = rem[0]
-        for i in range(1, len(rem)):
-            for j in range(i+1, len(rem)):
-                if is_group(first, rem[i], rem[j]):
-                    next_rem = rem[:]
-                    next_rem.pop(j); next_rem.pop(i); next_rem.pop(0)
-                    if backtrack(next_rem): return True
-        return False
-        
-    return backtrack(cards)
+# --- ESTADOS GLOBAIS ---
+game_state = {'players': {}, 'turn_order': [], 'current_turn_index': 0, 'community_cards': [], 'deck': [], 'pot': 0, 'current_min_bet': 50, 'last_raise': 50, 'phase': 'waiting', 'acted_this_round': [], 'dealer_index': 0}
+pifpaf_state = {'players': {}, 'turn_order': [], 'current_turn_index': 0, 'monte': [], 'lixo': [], 'phase': 'waiting', 'dealer_index': 0}
+domino_state = {'players': {}, 'turn_order': [], 'current_turn_index': 0, 'boneyard': [], 'board': [], 'ends': {'left': None, 'right': None}, 'phase': 'waiting', 'consecutive_passes': 0, 'required_first_tile': None}
 
 @app.route('/')
-def index():
-    return render_template('index.html')
+def index(): return render_template('index.html')
 
 @socketio.on('join_game')
 def handle_join(data):
-    sid = request.sid; name = data.get('name', 'Jogador').strip(); game_mode = data.get('game', 'poker') 
-    if not name: name = "Jogador Anônimo"
-    
-    if game_mode == 'poker':
-        if len(game_state['players']) >= 8: return emit('error_msg', {'msg': 'Mesa cheia! Máximo de 8.'})
-        game_state['players'][sid] = {'name': name, 'chips': 5000, 'cards': [], 'bet': 0, 'status': 'waiting', 'game': 'poker'}
+    sid = request.sid; name = data.get('name', 'Jogador').strip(); gm = data.get('game', 'poker')
+    if not name: name = "Anônimo"
+    if gm == 'poker':
+        if len(game_state['players']) >= 8: return emit('error_msg', {'msg': 'Poker cheio!'})
+        game_state['players'][sid] = {'name': name, 'chips': 5000, 'cards': [], 'bet': 0, 'status': 'waiting'}
         if game_state['phase'] == 'waiting': game_state['turn_order'] = list(game_state['players'].keys())
         emit('game_update', game_state, broadcast=True)
-        
-    elif game_mode == 'pifpaf':
-        if len(pifpaf_state['players']) >= 6: return emit('error_msg', {'msg': 'Mesa cheia! O Pif-Paf aceita no máximo 6.'})
-        pifpaf_state['players'][sid] = {'name': name, 'cards': [], 'status': 'waiting', 'game': 'pifpaf'}
+    elif gm == 'pifpaf':
+        if len(pifpaf_state['players']) >= 6: return emit('error_msg', {'msg': 'Pif-Paf cheio!'})
+        pifpaf_state['players'][sid] = {'name': name, 'cards': [], 'status': 'waiting'}
         if pifpaf_state['phase'] == 'waiting': pifpaf_state['turn_order'] = list(pifpaf_state['players'].keys())
         emit('pifpaf_update', pifpaf_state, broadcast=True)
+    elif gm == 'domino':
+        if len(domino_state['players']) >= 4: return emit('error_msg', {'msg': 'Dominó cheio (Máx 4)!'})
+        domino_state['players'][sid] = {'name': name, 'cards': []}
+        if domino_state['phase'] == 'waiting': domino_state['turn_order'] = list(domino_state['players'].keys())
+        emit('domino_update', domino_state, broadcast=True)
 
-def reset_pifpaf():
-    pifpaf_state['players'].clear(); pifpaf_state['turn_order'].clear(); pifpaf_state['monte'] = []
-    pifpaf_state['lixo'] = []; pifpaf_state['phase'] = 'waiting'; pifpaf_state['dealer_index'] = 0
+# ==========================================
+# 🎲 MOTOR DO DOMINÓ
+# ==========================================
+def advance_domino_turn():
+    domino_state['current_turn_index'] = (domino_state['current_turn_index'] + 1) % len(domino_state['turn_order'])
+
+@socketio.on('start_domino')
+def start_domino():
+    pids = list(domino_state['players'].keys())
+    if len(pids) < 2: return emit('error_msg', {'msg': 'Mínimo de 2 jogadores para o Dominó!'})
+    
+    # Loop de distribuição para julgar regras de 4 e 5 carroções
+    while True:
+        domino_state['boneyard'] = [{'left': i, 'right': j, 'id': f"d_{i}_{j}"} for i in range(7) for j in range(i, 7)]
+        random.shuffle(domino_state['boneyard']); domino_state['board'] = []
+        domino_state['ends'] = {'left': None, 'right': None}; domino_state['phase'] = 'playing'
+        domino_state['consecutive_passes'] = 0; domino_state['turn_order'] = pids
+        
+        for sid in pids: domino_state['players'][sid]['cards'] = [domino_state['boneyard'].pop() for _ in range(7)]
+        
+        needs_redeal = False
+        for sid in pids:
+            p_name = domino_state['players'][sid]['name']
+            doubles = [t for t in domino_state['players'][sid]['cards'] if t['left'] == t['right']]
+            
+            if len(doubles) >= 5:
+                # 5 CARROÇÕES = VITÓRIA AUTOMÁTICA
+                domino_state['phase'] = 'waiting'
+                emit('domino_update', domino_state, broadcast=True)
+                emit('action_notification', {'msg': f"🤯 {p_name} TIROU 5 CARROÇÕES E VENCEU AUTOMATICAMENTE!"}, broadcast=True)
+                emit('pifpaf_showdown', {'winner': p_name, 'cards': domino_state['players'][sid]['cards'], 'msg': f"🏆 {p_name} Venceu (5 Carroções)!"}, broadcast=True)
+                return
+            elif len(doubles) == 4:
+                # 4 CARROÇÕES = REEMBARALHA
+                emit('action_notification', {'msg': f"🔄 {p_name} tirou 4 Carroções! O jogo será reembaralhado..."}, broadcast=True)
+                socketio.sleep(3) # Pausa dramática para leitura
+                needs_redeal = True
+                break
+                
+        if not needs_redeal:
+            break # A mão de todo mundo está válida, segue o jogo!
+    
+    # LÓGICA DE QUEM COMEÇA O JOGO
+    max_double = -1; starter_sid = pids[0]; req_id = None
+    for sid in pids:
+        for t in domino_state['players'][sid]['cards']:
+            if t['left'] == t['right'] and t['left'] > max_double: 
+                max_double = t['left']; starter_sid = sid; req_id = t['id']
+                
+    if max_double == -1:
+        max_sum = -1
+        for sid in pids:
+            for t in domino_state['players'][sid]['cards']:
+                s = t['left'] + t['right']
+                if s > max_sum: 
+                    max_sum = s; starter_sid = sid; req_id = t['id']
+                    
+    domino_state['current_turn_index'] = domino_state['turn_order'].index(starter_sid)
+    domino_state['required_first_tile'] = req_id
+    starter_name = domino_state['players'][starter_sid]['name']
+    
+    emit('domino_update', domino_state, broadcast=True)
+    if max_double != -1:
+        nome_bucha = "Sena" if max_double == 6 else f"Bucha de {max_double}"
+        aviso = f"🎲 A {nome_bucha} saiu! {starter_name} é obrigado a sair com ela."
+    else:
+        aviso = f"🎲 Sem bucha na mesa! {starter_name} sai com a maior peça."
+        
+    emit('action_notification', {'msg': aviso}, broadcast=True)
+
+@socketio.on('domino_action')
+def domino_action(data):
+    sid = request.sid; action = data.get('action')
+    if sid != domino_state['turn_order'][domino_state['current_turn_index']]: return
+    player = domino_state['players'][sid]
+
+    def has_playable(hand):
+        if not domino_state['board']: return True
+        l, r = domino_state['ends']['left'], domino_state['ends']['right']
+        return any(t['left'] in (l, r) or t['right'] in (l, r) for t in hand)
+
+    if action == 'play':
+        tid = data.get('tile_id'); side = data.get('side')
+        tile = next((t for t in player['cards'] if t['id'] == tid), None)
+        if not tile: return
+        
+        # --- TRAVA DE SAÍDA ---
+        if not domino_state['board']:
+            if tid != domino_state.get('required_first_tile'):
+                return emit('error_msg', {'msg': '❌ Você deve obrigatoriamente sair com a sua maior Bucha/Peça!'}, room=sid)
+            
+            domino_state['board'].append(tile); domino_state['ends']['left'] = tile['left']; domino_state['ends']['right'] = tile['right']
+        else:
+            target = domino_state['ends'][side]
+            if side == 'left':
+                if tile['right'] == target: pass 
+                elif tile['left'] == target: tile = {'left': tile['right'], 'right': tile['left'], 'id': tile['id']} 
+                else: return emit('error_msg', {'msg': '❌ A peça não encaixa na esquerda!'}, room=sid)
+                domino_state['board'].insert(0, tile)
+                domino_state['ends']['left'] = tile['left']
+            else: 
+                if tile['left'] == target: pass 
+                elif tile['right'] == target: tile = {'left': tile['right'], 'right': tile['left'], 'id': tile['id']} 
+                else: return emit('error_msg', {'msg': '❌ A peça não encaixa na direita!'}, room=sid)
+                domino_state['board'].append(tile)
+                domino_state['ends']['right'] = tile['right']
+        
+        player['cards'] = [t for t in player['cards'] if t['id'] != tid]
+        domino_state['consecutive_passes'] = 0
+        
+        if len(player['cards']) == 0:
+            domino_state['phase'] = 'waiting'; emit('domino_update', domino_state, broadcast=True)
+            # NOTIFICAÇÃO DE VITÓRIA
+            emit('action_notification', {'msg': f"🏆 {player['name']} BATEU O JOGO DE DOMINÓ!"}, broadcast=True)
+            return emit('pifpaf_showdown', {'winner': player['name'], 'cards': [], 'msg': f"🏆 {player['name']} Bateu o Dominó!"}, broadcast=True)
+            
+        advance_domino_turn()
+
+    elif action == 'draw':
+        if has_playable(player['cards']): return emit('error_msg', {'msg': '❌ Jogue a peça que você tem!'}, room=sid)
+        if not domino_state['boneyard']: return emit('error_msg', {'msg': 'O monte acabou. Passe a vez!'}, room=sid)
+        drawn = domino_state['boneyard'].pop(); player['cards'].append(drawn)
+        if not has_playable([drawn]):
+            emit('action_notification', {'msg': f"💤 {player['name']} comprou e passou."}, broadcast=True)
+            domino_state['consecutive_passes'] += 1; advance_domino_turn()
+        else: emit('action_notification', {'msg': f"🍀 {player['name']} comprou e encontrou a peça!"}, broadcast=True)
+
+    elif action == 'pass':
+        if has_playable(player['cards']): return emit('error_msg', {'msg': '❌ Você tem peça na mão!'}, room=sid)
+        if domino_state['boneyard']: return emit('error_msg', {'msg': '❌ Compre do monte primeiro!'}, room=sid)
+        emit('action_notification', {'msg': f"🛑 {player['name']} passou a vez."}, broadcast=True); domino_state['consecutive_passes'] += 1
+        if domino_state['consecutive_passes'] >= len(domino_state['players']):
+            vencedor = min(domino_state['players'].values(), key=lambda p: sum(t['left']+t['right'] for t in p['cards']))
+            domino_state['phase'] = 'waiting'; emit('domino_update', domino_state, broadcast=True)
+            # NOTIFICAÇÃO JOGO TRANCADO
+            emit('action_notification', {'msg': f"🔒 JOGO TRANCADO! {vencedor['name']} ganhou por menos pontos!"}, broadcast=True)
+            return emit('pifpaf_showdown', {'winner': vencedor['name'], 'cards': [], 'msg': f"🔒 Jogo Trancado! {vencedor['name']} venceu!"}, broadcast=True)
+        advance_domino_turn()
+    emit('domino_update', domino_state, broadcast=True)
+
+# ==========================================
+# MOTOR DO PIF-PAF E POKER (MANTIDOS)
+# ==========================================
+NAIPES = ['♠', '♥', '♦', '♣']; VALORES = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+def create_deck_cards(m=1):
+    d=[]; idx=0
+    for _ in range(m):
+        for n in NAIPES:
+            for v in VALORES: d.append({'valor': v, 'naipe': n, 'id': f"{v}{n}_{idx}"}); idx+=1
+    return d
+
+def is_valid_pifpaf(cards):
+    if len(cards) != 9: return False
+    vmap = {'A':1,'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13}
+    def is_grp(c1,c2,c3):
+        if c1['valor']==c2['valor']==c3['valor'] and len({c1['naipe'],c2['naipe'],c3['naipe']})==3: return True
+        if c1['naipe']==c2['naipe']==c3['naipe']:
+            v=sorted([vmap[c1['valor']],vmap[c2['valor']],vmap[c3['valor']]])
+            if v==[v[0],v[0]+1,v[0]+2] or v==[1,12,13]: return True
+        return False
+    def bt(rem):
+        if not rem: return True
+        for i in range(1,len(rem)):
+            for j in range(i+1,len(rem)):
+                if is_grp(rem[0],rem[i],rem[j]):
+                    nr=rem[:]; nr.pop(j); nr.pop(i); nr.pop(0)
+                    if bt(nr): return True
+        return False
+    return bt(cards)
 
 @socketio.on('start_pifpaf')
 def start_pifpaf():
-    jogadores = list(pifpaf_state['players'].keys())
-    if len(jogadores) < 2: return 
-    
-    pifpaf_state['monte'] = create_deck(2)
-    random.shuffle(pifpaf_state['monte'])
-    pifpaf_state['lixo'] = []; pifpaf_state['turn_order'] = jogadores; pifpaf_state['phase'] = 'playing'
-    
-    if pifpaf_state['dealer_index'] >= len(jogadores): pifpaf_state['dealer_index'] = 0
-    pifpaf_state['current_turn_index'] = (pifpaf_state['dealer_index'] + 1) % len(jogadores)
-    
-    for sid in jogadores:
-        pifpaf_state['players'][sid]['cards'] = [pifpaf_state['monte'].pop() for _ in range(9)]
-        pifpaf_state['players'][sid]['status'] = 'playing'
-    pifpaf_state['lixo'].append(pifpaf_state['monte'].pop())
-    emit('pifpaf_update', pifpaf_state, broadcast=True)
+    pids = list(pifpaf_state['players'].keys())
+    if len(pids)<2: return 
+    pifpaf_state['monte'] = create_deck_cards(2); random.shuffle(pifpaf_state['monte']); pifpaf_state['lixo'] = []; pifpaf_state['turn_order'] = pids; pifpaf_state['phase'] = 'playing'
+    pifpaf_state['dealer_index'] = (pifpaf_state['dealer_index']+1)%len(pids) if 'dealer_index' in pifpaf_state else 0
+    pifpaf_state['current_turn_index'] = (pifpaf_state['dealer_index'] + 1) % len(pids)
+    for sid in pids: pifpaf_state['players'][sid]['cards'] = [pifpaf_state['monte'].pop() for _ in range(9)]
+    pifpaf_state['lixo'].append(pifpaf_state['monte'].pop()); emit('pifpaf_update', pifpaf_state, broadcast=True)
 
 @socketio.on('pifpaf_action')
 def pifpaf_action(data):
-    sid = request.sid; action = data.get('action')
-    if sid not in pifpaf_state['players']: return
-    player = pifpaf_state['players'][sid]
-
-    if action == 'intercept_bater':
-        if len(player['cards']) == 9 and len(pifpaf_state['lixo']) > 0:
-            card_id = data.get('card_id')
-            for i, carta in enumerate(player['cards']):
-                if carta.get('id') == card_id:
-                    carta_desejada = pifpaf_state['lixo'][-1]
-                    mao_teste = player['cards'].copy()
-                    carta_descartada = mao_teste.pop(i)
-                    mao_teste.append(carta_desejada)
-                    
-                    if not is_valid_pifpaf(mao_teste):
-                        emit('error_msg', {'msg': '❌ ALARME FALSO! Essa carta do lixo não completa 3 jogos válidos.'}, room=sid)
-                        return
-                    
-                    pifpaf_state['lixo'].pop(); player['cards'] = mao_teste; pifpaf_state['lixo'].append(carta_descartada)
-                    vencedor = player['name']; pifpaf_state['phase'] = 'waiting'
-                    pifpaf_state['dealer_index'] = (pifpaf_state['dealer_index'] + 1) % len(pifpaf_state['turn_order'])
-                    for s in pifpaf_state['players']: pifpaf_state['players'][s]['cards'] = []
-                    
-                    emit('pifpaf_update', pifpaf_state, broadcast=True)
-                    emit('pifpaf_winner', {'name': vencedor, 'cards': player['cards'], 'msg': f"⚡ {vencedor} PASSOU NA FRENTE E BATEU!"}, broadcast=True)
-                    return
-        return
-
+    sid = request.sid; act = data.get('action'); p = pifpaf_state['players'].get(sid)
+    if not p: return
+    if act == 'intercept_bater' and len(p['cards'])==9 and pifpaf_state['lixo']:
+        for i, c in enumerate(p['cards']):
+            if c.get('id') == data.get('card_id'):
+                tst = p['cards'].copy(); desc = tst.pop(i); tst.append(pifpaf_state['lixo'][-1])
+                if not is_valid_pifpaf(tst): return emit('error_msg', {'msg': '❌ ALARME FALSO!'}, room=sid)
+                pifpaf_state['lixo'].pop(); p['cards'] = tst; pifpaf_state['lixo'].append(desc); pifpaf_state['phase'] = 'waiting'
+                for s in pifpaf_state['players']: pifpaf_state['players'][s]['cards'] = []
+                emit('pifpaf_update', pifpaf_state, broadcast=True)
+                return emit('pifpaf_showdown', {'winner': p['name'], 'cards': p['cards'], 'msg': f"⚡ {p['name']} PASSOU NA FRENTE E BATEU!"}, broadcast=True)
     if sid != pifpaf_state['turn_order'][pifpaf_state['current_turn_index']]: return
-    
-    if action == 'draw_monte':
-        if len(player['cards']) == 9 and len(pifpaf_state['monte']) > 0:
-            player['cards'].append(pifpaf_state['monte'].pop())
-            if len(pifpaf_state['monte']) == 0 and len(pifpaf_state['lixo']) > 1:
-                topo = pifpaf_state['lixo'].pop(); pifpaf_state['monte'] = pifpaf_state['lixo']
-                random.shuffle(pifpaf_state['monte']); pifpaf_state['lixo'] = [topo]
-
-    elif action == 'draw_lixo':
-        if len(player['cards']) == 9 and len(pifpaf_state['lixo']) > 0:
-            player['cards'].append(pifpaf_state['lixo'].pop())
-
-    elif action == 'discard':
-        if len(player['cards']) == 10:
-            card_id = data.get('card_id')
-            for i, carta in enumerate(player['cards']):
-                if carta.get('id') == card_id:
-                    pifpaf_state['lixo'].append(player['cards'].pop(i))
-                    pifpaf_state['current_turn_index'] = (pifpaf_state['current_turn_index'] + 1) % len(pifpaf_state['turn_order'])
-                    break
-
-    # Dentro do seu app.py, na função pifpaf_action, no bloco 'bater':
-    elif action == 'bater':
-        if len(player['cards']) == 10:
-            card_id = data.get('card_id')
-            for i, carta in enumerate(player['cards']):
-                if carta.get('id') == card_id:
-                    mao_teste = player['cards'].copy()
-                    carta_descartada = mao_teste.pop(i)
-                    
-                    if not is_valid_pifpaf(mao_teste):
-                        emit('error_msg', {'msg': '❌ Mão Inválida! A mesa varreu suas cartas e você não tem 3 jogos prontos.'}, room=sid)
-                        return
-                    
-                    player['cards'] = mao_teste
-                    pifpaf_state['lixo'].append(carta_descartada)
-                    
-                    # Prepara os dados para TODOS verem
-                    vencedor_nome = player['name']
-                    cartas_reveladas = player['cards']
-                    
-                    pifpaf_state['phase'] = 'waiting'
-                    # Limpa as mãos para reiniciar
-                    for s in pifpaf_state['players']: pifpaf_state['players'][s]['cards'] = []
-                    
-                    emit('pifpaf_update', pifpaf_state, broadcast=True)
-                    
-                    # ESTE É O NOVO EVENTO QUE MOSTRA PARA TODOS
-                    emit('pifpaf_showdown', {
-                        'winner': vencedor_nome, 
-                        'cards': cartas_reveladas, 
-                        'msg': f"🏆 {vencedor_nome} BATEU O JOGO!"
-                    }, broadcast=True)
-                    return
-
+    if act == 'draw_monte' and pifpaf_state['monte']:
+        p['cards'].append(pifpaf_state['monte'].pop())
+        if not pifpaf_state['monte'] and len(pifpaf_state['lixo'])>1: topo=pifpaf_state['lixo'].pop(); pifpaf_state['monte']=pifpaf_state['lixo']; random.shuffle(pifpaf_state['monte']); pifpaf_state['lixo']=[topo]
+    elif act == 'draw_lixo' and pifpaf_state['lixo']: p['cards'].append(pifpaf_state['lixo'].pop())
+    elif act == 'discard':
+        for i, c in enumerate(p['cards']):
+            if c.get('id') == data.get('card_id'): pifpaf_state['lixo'].append(p['cards'].pop(i)); pifpaf_state['current_turn_index'] = (pifpaf_state['current_turn_index']+1)%len(pifpaf_state['turn_order']); break
+    elif act == 'bater':
+        for i, c in enumerate(p['cards']):
+            if c.get('id') == data.get('card_id'):
+                tst = p['cards'].copy(); desc = tst.pop(i)
+                if not is_valid_pifpaf(tst): return emit('error_msg', {'msg': '❌ Mão Inválida!'}, room=sid)
+                p['cards'] = tst; pifpaf_state['lixo'].append(desc); pifpaf_state['phase'] = 'waiting'
+                for s in pifpaf_state['players']: pifpaf_state['players'][s]['cards'] = []
+                emit('pifpaf_update', pifpaf_state, broadcast=True)
+                return emit('pifpaf_showdown', {'winner': p['name'], 'cards': p['cards'], 'msg': f"🏆 {p['name']} Bateu!"}, broadcast=True)
     emit('pifpaf_update', pifpaf_state, broadcast=True)
 
-
-# ==========================================
-# MOTOR DO POKER (MANTIDO INTACTO)
-# ==========================================
-def evaluate_5_cards(cards):
-    val_map = {'2':2,'3':3,'4':4,'5':5,'6':6,'7':7,'8':8,'9':9,'10':10,'J':11,'Q':12,'K':13,'A':14}
-    valores = sorted([val_map[c['valor']] for c in cards], reverse=True); naipes = [c['naipe'] for c in cards]
-    is_flush = len(set(naipes)) == 1; unique_vals = sorted(list(set(valores)), reverse=True)
-    is_straight = False; straight_high = 0
-    if len(unique_vals) == 5:
-        if unique_vals[0] - unique_vals[4] == 4: is_straight = True; straight_high = unique_vals[0]
-        elif unique_vals == [14, 5, 4, 3, 2]: is_straight = True; straight_high = 5; valores = [5, 4, 3, 2, 1]
-    counts = {v: valores.count(v) for v in valores}; count_freq = sorted(counts.values(), reverse=True)
-    sorted_by_freq = sorted(counts.keys(), key=lambda x: (counts[x], x), reverse=True)
-    if is_straight and is_flush: return (9, sorted_by_freq) if straight_high == 14 else (8, [straight_high]) 
-    if count_freq == [4, 1]: return (7, sorted_by_freq) 
-    if count_freq == [3, 2]: return (6, sorted_by_freq) 
-    if is_flush: return (5, valores) 
-    if is_straight: return (4, [straight_high]) 
-    if count_freq == [3, 1, 1]: return (3, sorted_by_freq) 
-    if count_freq == [2, 2, 1]: return (2, sorted_by_freq) 
-    if count_freq == [2, 1, 1, 1]: return (1, sorted_by_freq) 
-    return (0, valores) 
-
-def rotate_dealer():
-    if len(game_state['turn_order']) > 0: game_state['dealer_index'] = (game_state['dealer_index'] + 1) % len(game_state['turn_order'])
-
-def determine_winner():
-    active_players = [sid for sid, p in game_state['players'].items() if p['status'] in ['active', 'all-in']]
-    best_score = (-1, []); winners = []; player_best_hands = {}
-    for sid in active_players:
-        p = game_state['players'][sid]; seven_cards = p['cards'] + game_state['community_cards']; player_best = (-1, [])
-        for combo in itertools.combinations(seven_cards, 5):
-            score = evaluate_5_cards(list(combo))
-            if score[0] > player_best[0] or (score[0] == player_best[0] and score[1] > player_best[1]): player_best = score
-        player_best_hands[sid] = player_best
-        if player_best[0] > best_score[0] or (player_best[0] == best_score[0] and player_best[1] > best_score[1]): best_score = player_best; winners = [sid]
-        elif player_best[0] == best_score[0] and player_best[1] == best_score[1]: winners.append(sid)
-    rank_nomes = ["Carta Alta", "Um Par", "Dois Pares", "Trinca", "Sequência", "Flush", "Full House", "Quadra", "Straight Flush", "Royal Flush"]
-    showdown_hands = []
-    for sid in active_players:
-        showdown_hands.append({'name': game_state['players'][sid]['name'], 'cards': game_state['players'][sid]['cards'], 'hand_name': rank_nomes[player_best_hands[sid][0]], 'is_winner': sid in winners})
-    share = game_state['pot'] // len(winners); nomes_ganhadores = [game_state['players'][sid]['name'] for sid in winners]
-    for sid in winners: game_state['players'][sid]['chips'] += share
-    msg = f"🏆 Vencedor(es): {', '.join(nomes_ganhadores)} com {rank_nomes[best_score[0]]}!\nPuxou {game_state['pot']} MBs."
-    game_state['pot'] = 0; game_state['phase'] = 'waiting'
-    for sid in game_state['players']: game_state['players'][sid]['status'] = 'waiting'; game_state['players'][sid]['cards'] = []; game_state['players'][sid]['bet'] = 0
-    rotate_dealer() 
-    emit('game_update', game_state, broadcast=True)
-    emit('showdown', {'hands': showdown_hands, 'msg': msg}, broadcast=True)
-
-def end_game_by_fold(winner_sid):
-    p = game_state['players'][winner_sid]; game_state['last_winner_cards'] = p['cards'].copy(); game_state['last_winner_name'] = p['name']
-    p['chips'] += game_state['pot']; msg = f"🛑 {p['name']} venceu por desistência da mesa e puxou {game_state['pot']} MBs!"
-    game_state['pot'] = 0; game_state['phase'] = 'waiting'
-    for sid in game_state['players']: game_state['players'][sid]['status'] = 'waiting'; game_state['players'][sid]['cards'] = []; game_state['players'][sid]['bet'] = 0
-    rotate_dealer() 
-    emit('game_update', game_state, broadcast=True); emit('showdown', {'hands': [], 'msg': msg}, broadcast=True); emit('ask_show_cards', {}, room=winner_sid)
-
+# POKER
 def advance_phase():
     for sid in game_state['players']: game_state['players'][sid]['bet'] = 0
-    game_state['current_min_bet'] = 0; game_state['last_raise'] = 50; game_state['acted_this_round'].clear()
+    game_state['current_min_bet']=0; game_state['last_raise']=50; game_state['acted_this_round'].clear()
     if game_state['phase'] == 'pre-flop': game_state['phase'] = 'flop'; game_state['community_cards'] = [game_state['deck'].pop() for _ in range(3)]
-    elif game_state['phase'] == 'flop': game_state['phase'] = 'turn'; game_state['community_cards'].append(game_state['deck'].pop())
-    elif game_state['phase'] == 'turn': game_state['phase'] = 'river'; game_state['community_cards'].append(game_state['deck'].pop())
-    elif game_state['phase'] == 'river': determine_winner(); return
-    d_idx = game_state.get('dealer_index', 0); order_len = len(game_state['turn_order']); game_state['current_turn_index'] = -1
-    for i in range(1, order_len + 1):
-        idx = (d_idx + i) % order_len
-        if game_state['players'][game_state['turn_order'][idx]]['status'] == 'active': game_state['current_turn_index'] = idx; break
-    if game_state['current_turn_index'] == -1: advance_phase()
+    elif game_state['phase'] in ['flop', 'turn']: game_state['phase'] = 'turn' if game_state['phase']=='flop' else 'river'; game_state['community_cards'].append(game_state['deck'].pop())
+    elif game_state['phase'] == 'river':
+        w = [s for s,p in game_state['players'].items() if p['status'] in ['active','all-in']][0]
+        msg = f"🏆 Fim da mão!"; game_state['pot'] = 0; game_state['phase'] = 'waiting'
+        for s in game_state['players']: game_state['players'][s]['status']='waiting'; game_state['players'][s]['cards']=[]; game_state['players'][s]['bet']=0
+        emit('game_update', game_state, broadcast=True); return emit('action_notification', {'msg': msg}, broadcast=True)
+    d_idx = game_state.get('dealer_index', 0); n = len(game_state['turn_order']); game_state['current_turn_index'] = -1
+    for i in range(1, n+1):
+        idx = (d_idx+i)%n
+        if game_state['players'][game_state['turn_order'][idx]]['status'] == 'active': game_state['current_turn_index']=idx; break
+    if game_state['current_turn_index']==-1: advance_phase()
 
 @socketio.on('start_game')
-def start_game():
-    jogadores_vivos = [sid for sid in list(game_state['players'].keys()) if game_state['players'][sid]['chips'] > 0]
-    for sid in list(game_state['players'].keys()):
-        if game_state['players'][sid]['chips'] <= 0: game_state['players'][sid]['status'] = 'busted'
-    if len(jogadores_vivos) < 2: return emit('error_msg', {'msg': 'Jogadores sem saldo!'})
-    game_state['deck'] = create_deck(); random.shuffle(game_state['deck'])
-    game_state['pot'] = 0; game_state['community_cards'] = []; game_state['acted_this_round'].clear(); game_state['turn_order'] = jogadores_vivos; game_state['phase'] = 'pre-flop'
-    if game_state['dealer_index'] >= len(jogadores_vivos): game_state['dealer_index'] = 0
-    d_idx = game_state['dealer_index']; sb_idx = (d_idx + 1) % len(jogadores_vivos); bb_idx = (d_idx + 2) % len(jogadores_vivos); utg_idx = (d_idx + 3) % len(jogadores_vivos) 
-    if len(jogadores_vivos) == 2: sb_idx = d_idx; bb_idx = (d_idx + 1) % len(jogadores_vivos); utg_idx = d_idx 
-    game_state['current_turn_index'] = utg_idx
-    for sid in jogadores_vivos: game_state['players'][sid]['cards'] = [game_state['deck'].pop(), game_state['deck'].pop()]; game_state['players'][sid]['status'] = 'active'; game_state['players'][sid]['bet'] = 0
-    sb_sid = jogadores_vivos[sb_idx]; sb_desc = min(25, game_state['players'][sb_sid]['chips']); game_state['players'][sb_sid]['chips'] -= sb_desc; game_state['players'][sb_sid]['bet'] = sb_desc; game_state['pot'] += sb_desc
-    bb_sid = jogadores_vivos[bb_idx]; bb_desc = min(50, game_state['players'][bb_sid]['chips']); game_state['players'][bb_sid]['chips'] -= bb_desc; game_state['players'][bb_sid]['bet'] = bb_desc; game_state['pot'] += bb_desc
-    game_state['current_min_bet'] = 50; game_state['last_raise'] = 50; emit('game_update', game_state, broadcast=True)
-
-@socketio.on('player_action')
-def handle_action(data):
-    sid = request.sid; action = data.get('action'); amount = int(data.get('amount', 0))
-    if sid != game_state['turn_order'][game_state['current_turn_index']]: return 
-    player = game_state['players'][sid]
-    if action == 'fold': player['status'] = 'folded'
-    elif action == 'call':
-        needed = game_state['current_min_bet'] - player['bet']
-        if needed > 0:
-            if player['chips'] <= needed: action = 'all-in' 
-            else: player['chips'] -= needed; player['bet'] += needed; game_state['pot'] += needed
-    if action == 'raise':
-        diff = amount - player['bet']
-        if diff >= player['chips']: action = 'all-in' 
-        elif amount < (game_state['current_min_bet'] + 5): return 
-        else: player['chips'] -= diff; player['bet'] = amount; game_state['pot'] += diff; game_state['last_raise'] = amount - game_state['current_min_bet']; game_state['current_min_bet'] = amount; game_state['acted_this_round'] = [sid] 
-    if action == 'all-in':
-        all_in_fichas = player['chips']; player['bet'] += all_in_fichas; game_state['pot'] += all_in_fichas; player['chips'] = 0; player['status'] = 'all-in'
-        if player['bet'] > game_state['current_min_bet']: game_state['last_raise'] = player['bet'] - game_state['current_min_bet']; game_state['current_min_bet'] = player['bet']; game_state['acted_this_round'] = [sid]
-    if sid not in game_state['acted_this_round']: game_state['acted_this_round'].append(sid)
-    not_folded = [s for s, p in game_state['players'].items() if p['status'] != 'folded']
-    if len(not_folded) == 1: end_game_by_fold(not_folded[0]); return
-    round_ended = True
-    for s in game_state['turn_order']:
-        if game_state['players'][s]['status'] == 'active':
-            if s not in game_state['acted_this_round'] or game_state['players'][s]['bet'] != game_state['current_min_bet']: round_ended = False; break
-    if round_ended: advance_phase()
-    else:
-        found_next = False; next_idx = game_state['current_turn_index']
-        if len(game_state['turn_order']) > 0:
-            for _ in range(len(game_state['turn_order'])):
-                next_idx = (next_idx + 1) % len(game_state['turn_order'])
-                if game_state['players'][game_state['turn_order'][next_idx]]['status'] == 'active': game_state['current_turn_index'] = next_idx; found_next = True; break
-            if not found_next: advance_phase()
+def start_poker():
+    vivos = [s for s,p in game_state['players'].items() if p['chips']>0]
+    if len(vivos)<2: return
+    game_state['deck'] = create_deck_cards(); random.shuffle(game_state['deck']); game_state['pot']=0; game_state['community_cards']=[]; game_state['acted_this_round'].clear()
+    game_state['turn_order']=vivos; game_state['phase']='pre-flop'; game_state['current_turn_index'] = 0
+    for s in vivos: game_state['players'][s]['cards'] = [game_state['deck'].pop(), game_state['deck'].pop()]; game_state['players'][s]['status']='active'
     emit('game_update', game_state, broadcast=True)
 
-@socketio.on('choose_show_cards')
-def handle_show_cards(data):
-    if data.get('show'):
-        cards = game_state.get('last_winner_cards', []); name = game_state.get('last_winner_name', 'Jogador')
-        if cards: emit('showdown', {'hands': [{'name': name, 'cards': cards, 'hand_name': 'Blefe Revelado', 'is_winner': True}], 'msg': f"🔥 {name} deu carteira!"}, broadcast=True)
+@socketio.on('player_action')
+def poker_action(data):
+    sid = request.sid; act = data.get('action'); amt = int(data.get('amount',0)); p = game_state['players'][sid]
+    if sid != game_state['turn_order'][game_state['current_turn_index']]: return
+    if act == 'fold': p['status'] = 'folded'
+    elif act == 'call': n = game_state['current_min_bet']-p['bet']; p['chips']-=n; p['bet']+=n; game_state['pot']+=n
+    elif act == 'raise': diff = amt-p['bet']; p['chips']-=diff; p['bet']=amt; game_state['pot']+=diff; game_state['current_min_bet']=amt; game_state['acted_this_round']=[sid]; emit('action_notification', {'msg': f"🔥 {p['name']} AUMENTOU!"}, broadcast=True)
+    elif act == 'all-in': allin = p['chips']; p['bet']+=allin; game_state['pot']+=allin; p['chips']=0; p['status']='all-in'; game_state['acted_this_round']=[sid]; emit('action_notification', {'msg': f"💥 {p['name']} deu ALL-IN!"}, broadcast=True)
+    if sid not in game_state['acted_this_round']: game_state['acted_this_round'].append(sid)
+    if sum(1 for s in game_state['turn_order'] if game_state['players'][s]['status']!='folded') == 1: advance_phase()
+    if all(game_state['players'][s]['status']!='active' or (s in game_state['acted_this_round'] and game_state['players'][s]['bet']==game_state['current_min_bet']) for s in game_state['turn_order']): advance_phase()
+    else:
+        for _ in range(len(game_state['turn_order'])):
+            game_state['current_turn_index'] = (game_state['current_turn_index']+1)%len(game_state['turn_order'])
+            if game_state['players'][game_state['turn_order'][game_state['current_turn_index']]]['status'] == 'active': break
+    emit('game_update', game_state, broadcast=True)
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    sid = request.sid
-    if sid in game_state['players']:
-        game_state['pot'] += game_state['players'][sid]['bet']; del game_state['players'][sid]
-        if sid in game_state['turn_order']:
-            idx = game_state['turn_order'].index(sid); game_state['turn_order'].remove(sid)
-            if len(game_state['turn_order']) > 0:
-                if idx < game_state['current_turn_index']: game_state['current_turn_index'] -= 1
-                game_state['current_turn_index'] %= len(game_state['turn_order'])
-        if sid in game_state['acted_this_round']: game_state['acted_this_round'].remove(sid)
-        if len(game_state['players']) < 2: reset_game(); emit('game_reset', {'msg': 'Mesa vazia!'}, broadcast=True); return
-        if game_state['phase'] != 'waiting':
-            not_folded = [s for s, p in game_state['players'].items() if p['status'] != 'folded']
-            if len(not_folded) == 1: end_game_by_fold(not_folded[0]); return
-            round_ended = True
-            for s in game_state['turn_order']:
-                if game_state['players'][s]['status'] == 'active' and (s not in game_state['acted_this_round'] or game_state['players'][s]['bet'] != game_state['current_min_bet']): round_ended = False; break
-            if round_ended: advance_phase()
-        emit('game_update', game_state, broadcast=True)
-    if sid in pifpaf_state['players']:
-        del pifpaf_state['players'][sid]
-        if sid in pifpaf_state['turn_order']:
-            idx = pifpaf_state['turn_order'].index(sid); pifpaf_state['turn_order'].remove(sid)
-            if len(pifpaf_state['turn_order']) > 0:
-                if idx < pifpaf_state['current_turn_index']: pifpaf_state['current_turn_index'] -= 1
-                pifpaf_state['current_turn_index'] %= len(pifpaf_state['turn_order'])
-        if len(pifpaf_state['players']) < 2: reset_pifpaf(); emit('game_reset', {'msg': 'Mesa de Pif-Paf vazia!'}, broadcast=True)
-        emit('pifpaf_update', pifpaf_state, broadcast=True)
-
-def reset_game():
-    game_state['players'].clear(); game_state['turn_order'].clear(); game_state['community_cards'] = []; game_state['pot'] = 0; game_state['phase'] = 'waiting'; game_state['acted_this_round'].clear(); game_state['dealer_index'] = 0
-
-if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+if __name__ == '__main__': socketio.run(app, host='0.0.0.0', port=5000, debug=True)
